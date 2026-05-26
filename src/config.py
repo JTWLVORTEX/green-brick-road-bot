@@ -31,8 +31,8 @@ GOOGLE_SHEET_ID = _required('GOOGLE_SHEET_ID')
 GOOGLE_OAUTH_CREDENTIALS_PATH = PROJECT_ROOT / _required('GOOGLE_OAUTH_CREDENTIALS_PATH')
 GOOGLE_OAUTH_TOKEN_PATH = PROJECT_ROOT / _required('GOOGLE_OAUTH_TOKEN_PATH')
 
-# Apollo
-APOLLO_API_KEY = _required('APOLLO_API_KEY')
+# Hunter.io
+HUNTER_API_KEY = _required('HUNTER_API_KEY')
 
 # Sanity check: confirm OAuth credentials file exists
 if not GOOGLE_OAUTH_CREDENTIALS_PATH.exists():
