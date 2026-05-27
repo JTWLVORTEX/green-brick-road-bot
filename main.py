@@ -268,6 +268,21 @@ def collect_businesses() -> List[Dict]:
     return all_businesses
 
 
+def _is_blacklisted(domain: str) -> bool:
+    """Check domain against blacklist, including subdomain matches."""
+    if domain in DOMAIN_BLACKLIST:
+        return True
+    # Catch subdomains: locators.bankofamerica.com matches bankofamerica.com
+    for blacklisted in DOMAIN_BLACKLIST:
+        if domain.endswith('.' + blacklisted):
+            return True
+    # Filter government and education domains — not founder-led businesses
+    tld = domain.split('.')[-1]
+    if tld in ('gov', 'edu', 'mil'):
+        return True
+    return False
+
+
 def extract_unique_domains(businesses: List[Dict], seen_domains: Set[str]) -> List[Dict]:
     """Stage 2: convert businesses to unique domains, filter blacklist + seen, randomize."""
     print(f"\n[Stage 2] Extracting unique domains...")
@@ -278,7 +293,7 @@ def extract_unique_domains(businesses: List[Dict], seen_domains: Set[str]) -> Li
         domain = places.extract_domain(biz['website'])
         if not domain:
             continue
-        if domain in DOMAIN_BLACKLIST:
+        if _is_blacklisted(domain):
             skipped_blacklist += 1
             continue
         if domain in seen_domains:
