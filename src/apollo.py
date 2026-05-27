@@ -32,7 +32,7 @@ def find_founders_at_domain(domain: str, max_results: int = 3) -> List[Dict]:
     Returns:
         List of dicts: name, first_name, last_name, email, title,
         linkedin_url, organization_name
-        Returns [] if no founders found or rate limited.
+        Returns [] if no founders found, company too large, or rate limited.
     """
     url = f"{HUNTER_API_BASE}/domain-search"
     params = {

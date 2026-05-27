@@ -13,8 +13,10 @@ v3 changes:
 - Blacklist additions: J. Alexander's, Woodman's, other regional
   chains seen in real-world test run.
 """
+import json
 import random
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Set
 
 from src import places, apollo as hunter, sheets
@@ -38,9 +40,14 @@ INCLUDED_BUSINESS_TYPES = [
     'insurance_agency',
     'real_estate_agency',
     'consultant',
-    'corporate_office',
     'moving_company',
+    # NOTE: 'corporate_office' intentionally excluded - it surfaces large
+    # corporations (KPMG, Morningstar, Willis Tower) not founder-led businesses.
 ]
+
+# Persistent file tracking domains Hunter already returned 0 founders for.
+# Skipped on all future runs so we never waste a credit on them again.
+SEEN_DOMAINS_PATH = Path(__file__).parent / 'data' / 'seen_domains.json'
 
 # Each search returns up to 20 businesses within SEARCH_RADIUS_METERS.
 SEARCH_AREAS = [
@@ -214,6 +221,20 @@ def label_for_biz(biz: Dict) -> str:
     return parts[1] if len(parts) > 1 else 'Chicagoland'
 
 
+def load_seen_domains() -> Set[str]:
+    """Load the persistent set of domains already tried with no founder results."""
+    if SEEN_DOMAINS_PATH.exists():
+        return set(json.loads(SEEN_DOMAINS_PATH.read_text()))
+    return set()
+
+
+def save_seen_domain(domain: str, seen_domains: Set[str]) -> None:
+    """Add a domain to the persistent skip list and write to disk."""
+    seen_domains.add(domain)
+    SEEN_DOMAINS_PATH.parent.mkdir(exist_ok=True)
+    SEEN_DOMAINS_PATH.write_text(json.dumps(sorted(seen_domains), indent=2))
+
+
 # ============================================================
 # PIPELINE STAGES
 # ============================================================
@@ -247,17 +268,21 @@ def collect_businesses() -> List[Dict]:
     return all_businesses
 
 
-def extract_unique_domains(businesses: List[Dict]) -> List[Dict]:
-    """Stage 2: convert businesses to unique domains, filter blacklist, randomize."""
+def extract_unique_domains(businesses: List[Dict], seen_domains: Set[str]) -> List[Dict]:
+    """Stage 2: convert businesses to unique domains, filter blacklist + seen, randomize."""
     print(f"\n[Stage 2] Extracting unique domains...")
     domain_to_biz = {}
     skipped_blacklist = 0
+    skipped_seen = 0
     for biz in businesses:
         domain = places.extract_domain(biz['website'])
         if not domain:
             continue
         if domain in DOMAIN_BLACKLIST:
             skipped_blacklist += 1
+            continue
+        if domain in seen_domains:
+            skipped_seen += 1
             continue
         if domain not in domain_to_biz:
             domain_to_biz[domain] = biz
@@ -267,6 +292,7 @@ def extract_unique_domains(businesses: List[Dict]) -> List[Dict]:
 
     print(f"  Unique domains: {len(domains_list)}")
     print(f"  Skipped (blacklist): {skipped_blacklist}")
+    print(f"  Skipped (seen, 0 results last time): {skipped_seen}")
     print(f"  Order randomized for variety across runs")
     return domains_list
 
@@ -274,6 +300,7 @@ def extract_unique_domains(businesses: List[Dict]) -> List[Dict]:
 def find_founder_leads(
     domains_with_biz: List[Dict],
     existing_emails: Set[str],
+    seen_domains: Set[str],
 ) -> List[Dict]:
     """Stage 3: call Hunter on each new domain (capped), build lead records."""
     print(f"\n[Stage 3] Looking up founders (max {MAX_HUNTER_CALLS_PER_RUN} Hunter calls)...")
@@ -299,7 +326,8 @@ def find_founder_leads(
 
         founders = [c for c in contacts if is_founder_email(c)]
         if not founders:
-            print(f"    No founder-level contacts")
+            print(f"    No founder-level contacts — saving to skip list")
+            save_seen_domain(domain, seen_domains)
             continue
 
         for f in founders:
@@ -337,12 +365,15 @@ def main():
     print(f"  Run started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
+    seen_domains = load_seen_domains()
+    print(f"\n  Seen domains on skip list: {len(seen_domains)}")
+
     businesses = collect_businesses()
     if not businesses:
         print("\nNo businesses found. Exiting.")
         return
 
-    domains_with_biz = extract_unique_domains(businesses)
+    domains_with_biz = extract_unique_domains(businesses, seen_domains)
     if not domains_with_biz:
         print("\nNo qualifying domains. Exiting.")
         return
@@ -351,7 +382,7 @@ def main():
     existing_emails = sheets.get_existing_emails()
     print(f"  {len(existing_emails)} existing emails")
 
-    leads = find_founder_leads(domains_with_biz, existing_emails)
+    leads = find_founder_leads(domains_with_biz, existing_emails, seen_domains)
 
     print(f"\n[Stage 4] Writing to Google Sheet...")
     if leads:
