@@ -2,15 +2,16 @@
 Green Brick Road lead finder bot.
 Orchestrator that ties Places + Hunter + Sheets together.
 
-Pipeline:
-1. Search multiple Chicagoland areas via Google Places
-2. Collect businesses with websites, extract unique domains
-3. Filter out blacklisted domains (national chains, franchises)
-4. Randomize domain order (so each run samples differently)
-5. Read existing emails from Sheet for dedup
-6. Call Hunter on capped number of new domains
-7. Filter Hunter results to founder-level contacts only
-8. Append new leads to Google Sheet
+v3 changes:
+- Industry filter: Places searches restricted to professional
+  services types (lawyers, accountants, financial advisors,
+  insurance, real estate, consultants, corporate offices,
+  moving companies). Drops restaurants/retail/grocery noise.
+- Founder filter: fixed substring bug where "Vice President"
+  matched "president". Now uses negative patterns first to
+  exclude VPs and department heads.
+- Blacklist additions: J. Alexander's, Woodman's, other regional
+  chains seen in real-world test run.
 """
 import random
 from datetime import datetime
@@ -24,11 +25,25 @@ from src import places, apollo as hunter, sheets
 # ============================================================
 
 # Hunter free tier = 25 searches/month. 5/run x 4 runs = 20/month, safe.
-# UPGRADE PATH: bump to 50+ when on Hunter Starter ($34/mo, 2000 credits).
+# UPGRADE PATH: bump to 50+ when on Hunter Starter ($34/mo).
 MAX_HUNTER_CALLS_PER_RUN = 5
 
+# Places business type filter. Only these categories are returned.
+# This is the core quality lever - tightens results to professional
+# services and away from consumer-facing businesses.
+# To widen: add types from https://developers.google.com/maps/documentation/places/web-service/place-types
+INCLUDED_BUSINESS_TYPES = [
+    'lawyer',
+    'accounting',
+    'finance',
+    'insurance_agency',
+    'real_estate_agency',
+    'consultant',
+    'corporate_office',
+    'moving_company',
+]
+
 # Each search returns up to 20 businesses within SEARCH_RADIUS_METERS.
-# More points = wider coverage. All free under Google Places free tier.
 SEARCH_AREAS = [
     # North shore
     (42.1711, -87.8445, "Deerfield"),
@@ -56,8 +71,8 @@ SEARCH_AREAS = [
 ]
 SEARCH_RADIUS_METERS = 4000
 
-# Domains to skip - national chains, franchises, big box retail.
-# Add more as Wyatt sees junk results in his sheet.
+# Domains to skip - national chains, franchises, big box retail,
+# regional chains seen in test runs.
 DOMAIN_BLACKLIST = {
     # Fast food and restaurant chains
     'mcdonalds.com', 'subway.com', 'starbucks.com', 'dunkindonuts.com',
@@ -76,6 +91,7 @@ DOMAIN_BLACKLIST = {
     'burgerking.com', 'littlecaesars.com', 'papamurphys.com',
     'baskinrobbins.com', 'coldstonecreamery.com', 'benjerry.com',
     'timhortons.com', 'einsteinbros.com', 'noodles.com',
+    'jalexanders.com',  # Regional chain seen in test
     # Big box retail and grocery
     'walmart.com', 'target.com', 'costco.com', 'samsclub.com', 'bjs.com',
     'macys.com', 'kohls.com', 'jcpenney.com', 'sears.com', 'marshalls.com',
@@ -89,6 +105,7 @@ DOMAIN_BLACKLIST = {
     'petsmart.com', 'bestbuy.com', 'homedepot.com', 'lowes.com',
     'staples.com', 'officedepot.com', 'ulta.com', 'sephora.com',
     'bathandbodyworks.com', 'ikea.com', 'wayfair.com',
+    'woodmans-food.com',  # Regional grocery chain seen in test
     # Gas and convenience
     'shell.us', 'bp.com', 'exxonmobil.com', 'chevron.com', '7-eleven.com',
     'circlek.com', 'wawa.com', 'sheetz.com', 'caseys.com',
@@ -128,14 +145,34 @@ DOMAIN_BLACKLIST = {
     'amazon.com', 'google.com', 'apple.com', 'microsoft.com',
 }
 
-# Seniority levels Hunter returns that we consider founder-equivalent
-FOUNDER_SENIORITY = {'owner', 'partner', 'c_suite', 'executive'}
+# Seniority levels we consider founder-equivalent.
+# Removed 'executive' which incorrectly matched VPs.
+FOUNDER_SENIORITY = {'owner', 'partner', 'c_suite'}
 
-# Position keywords for matching when seniority field is missing
+# Position keywords that indicate founder-level (POSITIVE match)
 FOUNDER_KEYWORDS = [
-    'founder', 'co-founder', 'cofounder', 'owner', 'ceo',
-    'chief executive', 'president', 'principal', 'managing director',
-    'managing partner', 'proprietor',
+    'founder', 'co-founder', 'cofounder', 'owner',
+    'ceo', 'chief executive', 'president',
+    'managing director', 'managing partner',
+    'proprietor',
+]
+
+# Position keywords that EXCLUDE someone even if they have a
+# founder-sounding title. Checked BEFORE positive match.
+# Example: "Executive Vice President" gets excluded by 'vice president'
+# before it can match 'president'.
+NON_FOUNDER_PATTERNS = [
+    'vice president',
+    'vp ', ' vp', ' vp,',
+    'svp', 'evp',
+    'assistant',
+    'director of',
+    'head of',
+    'president of',  # blocks "President of Sales" etc.
+    'principal engineer', 'principal scientist',
+    'principal designer', 'principal architect',
+    'deputy',
+    'associate',
 ]
 
 
@@ -144,13 +181,30 @@ FOUNDER_KEYWORDS = [
 # ============================================================
 
 def is_founder_email(email_data: Dict) -> bool:
-    """Return True if this Hunter email looks like a founder-level contact."""
+    """
+    Return True if this Hunter email looks like a founder-level contact.
+
+    Logic:
+    1. Check seniority field first (most reliable when available)
+    2. If position contains any NON_FOUNDER_PATTERNS, reject
+    3. If position contains any FOUNDER_KEYWORDS, accept
+    """
     seniority = (email_data.get('seniority') or '').lower()
     position = (email_data.get('position') or email_data.get('title') or '').lower()
+
+    # Strong signal: trusted seniority levels
     if seniority in FOUNDER_SENIORITY:
         return True
+
+    # Negative filter first (catches "Vice President" before "president" matches)
+    for neg in NON_FOUNDER_PATTERNS:
+        if neg in position:
+            return False
+
+    # Positive filter
     if any(kw in position for kw in FOUNDER_KEYWORDS):
         return True
+
     return False
 
 
@@ -166,8 +220,8 @@ def label_for_biz(biz: Dict) -> str:
 # ============================================================
 
 def collect_businesses() -> List[Dict]:
-    """Stage 1: search all Chicagoland areas, return deduped business list."""
-    print(f"\n[Stage 1] Searching {len(SEARCH_AREAS)} Chicagoland areas...")
+    """Stage 1: search Chicagoland areas filtered by professional service types."""
+    print(f"\n[Stage 1] Searching {len(SEARCH_AREAS)} areas, filtered to {len(INCLUDED_BUSINESS_TYPES)} business types...")
     all_businesses = []
     seen_place_ids = set()
 
@@ -175,7 +229,9 @@ def collect_businesses() -> List[Dict]:
         try:
             results = places.search_nearby(
                 latitude=lat, longitude=lng,
-                radius_meters=SEARCH_RADIUS_METERS, max_results=20,
+                radius_meters=SEARCH_RADIUS_METERS,
+                included_types=INCLUDED_BUSINESS_TYPES,
+                max_results=20,
             )
             new_count = 0
             for biz in results:
@@ -188,7 +244,7 @@ def collect_businesses() -> List[Dict]:
         except Exception as e:
             print(f"  ERROR searching {label}: {e}")
             continue
-    print(f"  Total unique businesses: {len(all_businesses)}")
+    print(f"  Total unique professional service businesses: {len(all_businesses)}")
     return all_businesses
 
 
