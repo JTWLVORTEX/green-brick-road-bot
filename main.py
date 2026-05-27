@@ -35,7 +35,6 @@ MAX_HUNTER_CALLS_PER_RUN = 5
 INCLUDED_BUSINESS_TYPES = [
     'lawyer',
     'accounting',
-    'finance',
     'insurance_agency',
     'real_estate_agency',
     'consultant',

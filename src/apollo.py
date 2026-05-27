@@ -57,22 +57,23 @@ def find_founders_at_domain(domain: str, max_results: int = 3) -> List[Dict]:
 
     results = []
     for person in emails:
-        email = person.get("value", "")
+        email = person.get("value") or ""
         if not email:
             continue
-        title = person.get("position", "")
-        if not _is_founder_title(title):
-            continue
-        first = person.get("first_name", "")
-        last = person.get("last_name", "")
+        title = person.get("position") or ""
+        seniority = person.get("seniority") or ""
+        first = person.get("first_name") or ""
+        last = person.get("last_name") or ""
         results.append({
             "name": f"{first} {last}".strip(),
             "first_name": first,
             "last_name": last,
             "email": email,
             "title": title,
-            "linkedin_url": person.get("linkedin", ""),
-            "organization_name": data.get("data", {}).get("organization", ""),
+            "position": title,
+            "seniority": seniority,
+            "linkedin_url": person.get("linkedin") or "",
+            "organization_name": data.get("data", {}).get("organization") or "",
         })
         if len(results) >= max_results:
             break
