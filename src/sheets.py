@@ -3,6 +3,7 @@ Google Sheets API client.
 Reads existing leads (for dedup) and appends new ones.
 Handles OAuth flow on first run.
 """
+import os
 from pathlib import Path
 from typing import List, Dict, Set
 from google.auth.transport.requests import Request
@@ -38,6 +39,14 @@ def _get_credentials() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # Never attempt a browser flow on Railway (no display)
+            if os.getenv("RAILWAY_ENVIRONMENT"):
+                raise RuntimeError(
+                    "Google OAuth token is missing or invalid on Railway. "
+                    "Regenerate token.json locally by running the bot on your "
+                    "computer, then paste its contents into the Railway variable "
+                    "GOOGLE_OAUTH_TOKEN_JSON."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(GOOGLE_OAUTH_CREDENTIALS_PATH), SCOPES
             )
